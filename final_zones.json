@@ -1,0 +1,18 @@
+{
+    "window_title": "(6) AUTO CÂU CÁ, TỰ GIẢI CAPTCHA , TỰ ĂN UỐNG - LUQUY ROLEPLAY",
+    "description": "Cấu trúc: 1 khung bao quát + 5 ô nút bấm bên trong",
+    "main_zone": {
+        "name": "full_bar",
+        "x": 835, 
+        "y": 920, 
+        "w": 253, 
+        "h": 50
+    },
+    "sub_zones": [
+        {"id": 1, "x": 836, "y": 925, "w": 42, "h": 42},
+        {"id": 2, "x": 888, "y": 925, "w": 42, "h": 42},
+        {"id": 3, "x": 938, "y": 925, "w": 42, "h": 42},
+        {"id": 4, "x": 990, "y": 925, "w": 42, "h": 42},
+        {"id": 5, "x": 1040, "y": 925, "w": 42, "h": 42}
+    ]
+}
