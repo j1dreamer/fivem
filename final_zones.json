@@ -1,6 +1,6 @@
 {
-    "window_title": "(7) AUTO CÂU CÁ, TỰ GIẢI CAPTCHA , TỰ ĂN UỐNG - LUQUY ROLEPLAY",
-    "description": "Cấu trúc: 1 khung bao quát + 5 ô nút bấm bên trong",
+    "window_title": "FiveM® by Cfx.re - LUQUY Roleplay",
+    "description": "",
     "main_zone": {
         "name": "full_bar",
         "x": 835,
@@ -57,5 +57,5 @@
         ]
     },
     "cast_key": "1",
-    "hotkey": "F3"
+    "hotkey": "F9"
 }

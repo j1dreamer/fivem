@@ -12,7 +12,7 @@ with open('final_zones.json', 'r', encoding='utf-8') as f:
 print("--- ĐANG TÌM CỬA SỔ GAME ---")
 # Tìm cửa sổ có tên chứa từ khóa (ví dụ "YouTube" hoặc tên đầy đủ)
 # Bạn có thể sửa từ khóa dưới đây cho ngắn gọn nếu cần
-target_keyword = "YouTube" 
+target_keyword = "FiveM® by Cfx.re - LUQUY Roleplay" 
 windows = gw.getWindowsWithTitle(target_keyword)
 
 if not windows:

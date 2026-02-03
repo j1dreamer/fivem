@@ -1,235 +1,154 @@
-import tkinter as tk
-from tkinter import ttk
-from tkinter.scrolledtext import ScrolledText
-import threading
-import time
-import json
 import cv2
 import numpy as np
 import mss
+import time
+import json
 import os
-import pygetwindow as gw
 import pydirectinput
-from datetime import datetime
+import keyboard
+import logging
+import re
 
+# --- CONFIGURATION (SYNC WITH modern_bot.py) ---
 CONFIG_FILE = 'final_zones.json'
 TEMPLATE_FOLDER = 'mau_vat'
-THRESHOLD = 0.85
+MATCH_THRESHOLD = 0.80
+BINARY_THRESHOLD_VAL = 175
+TURBO_SCALE = 0.5
+ZONE_COUNT = 5
 
-class FishingBotApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Auto Fishing Bot")
-        self.root.geometry("900x600")
-        self.root.configure(bg="#2c3e50")
-        self.root.attributes('-topmost', True)
-        self.running = False
-        self.thread = None
-        self.last_states = {}
-        self.zone_labels = {}
-        self.log_box = None
-        self.arrow_templates = {}
-        self.zones = []
-        self.trigger_pixel = None
-        self.cast_key = {}
-        self.window_title = 'YouTube'
-        self.setup_ui()
-        self.load_config()
-        self.load_templates()
-        self.update_zone_labels()
-        self.ensure_debug_folder()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    def setup_ui(self):
-        frm = ttk.Frame(self.root, padding=10)
-        frm.pack(fill=tk.BOTH, expand=True)
-
-        btn_frame = ttk.Frame(frm)
-        btn_frame.pack(fill=tk.X, pady=5)
-        self.btn_start = ttk.Button(btn_frame, text="BẮT ĐẦU", command=self.start_bot)
-        self.btn_start.pack(side=tk.LEFT, padx=5)
-        self.btn_stop = ttk.Button(btn_frame, text="DỪNG LẠI", command=self.stop_bot, state=tk.DISABLED)
-        self.btn_stop.pack(side=tk.LEFT, padx=5)
-
-        zone_frame = ttk.LabelFrame(frm, text="Zone Status")
-        zone_frame.pack(fill=tk.X, pady=10)
-        self.zone_frame = zone_frame
-
-        log_frame = ttk.LabelFrame(frm, text="Log")
-        log_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        self.log_box = ScrolledText(log_frame, height=10, state="normal", font=("Consolas", 11), bg="black", fg="#00ff00")
-        self.log_box.pack(fill=tk.BOTH, expand=True)
-        self.log_box.config(state="disabled")
-
-    def ensure_debug_folder(self):
-        if not os.path.exists('debug_crops'):
-            os.makedirs('debug_crops')
-
-    def log_to_gui(self, message):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_msg = f"[{timestamp}] {message}"
-        if hasattr(self, 'log_box') and self.log_box:
-            self.log_box.config(state="normal")
-            self.log_box.insert(tk.END, log_msg + "\n")
-            self.log_box.see(tk.END)
-            self.log_box.config(state="disabled")
-        else:
-            print(log_msg)
+class SimpleFisher:
+    def __init__(self):
+        self.config = self.load_config()
+        self.templates = self.load_templates()
+        self.running = True
 
     def load_config(self):
         if not os.path.exists(CONFIG_FILE):
-            self.log_to_gui(f"LỖI: Không tìm thấy file cấu hình {CONFIG_FILE}")
-            return
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        self.zones = data.get("sub_zones", [])
-        self.trigger_pixel = data.get("trigger_pixel", None)
-        self.cast_key = data.get("cast_key", "f6")
-        self.window_title = data.get("window_title", "YouTube")
-        self.log_to_gui(f"Đã tải cấu hình: {len(self.zones)} zones, trigger_pixel: {self.trigger_pixel}, cast_key: {self.cast_key}, window_title: {self.window_title}")
+             print(f"Error: {CONFIG_FILE} not found!")
+             return {}
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
 
     def load_templates(self):
+        """Load -> Grayscale -> Resize 50% -> Binary Threshold 175"""
         templates = {}
-        for name in ['up', 'down', 'left', 'right']:
-            path = os.path.join(TEMPLATE_FOLDER, f"{name}.png")
-            if os.path.exists(path):
+        if not os.path.exists(TEMPLATE_FOLDER):
+            print(f"Error: {TEMPLATE_FOLDER} missing!")
+            return {}
+
+        for f in os.listdir(TEMPLATE_FOLDER):
+            if f.lower().endswith('.png'):
+                name = os.path.splitext(f)[0]
+                path = os.path.join(TEMPLATE_FOLDER, f)
                 img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-                templates[name] = img
-                self.log_to_gui(f"Đã tải mẫu: {name}.png")
-            else:
-                self.log_to_gui(f"CẢNH BÁO: Thiếu file {path}")
-        self.arrow_templates = templates
+                
+                if img is not None:
+                    # 1. Resize 50%
+                    h, w = img.shape
+                    new_h, new_w = int(h * TURBO_SCALE), int(w * TURBO_SCALE)
+                    img_small = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                    
+                    # 2. Binary Threshold 175
+                    _, img_binary = cv2.threshold(img_small, BINARY_THRESHOLD_VAL, 255, cv2.THRESH_BINARY)
+                    
+                    templates[name] = img_binary
+                    logging.info(f"Loaded Template: {name}")
+        return templates
 
-    def update_zone_labels(self):
-        # Luôn tạo đủ 5 zone
-        for lbl in self.zone_labels.values():
-            lbl.destroy()
-        self.zone_labels = {}
-        for i in range(5):
-            z_id = i+1
-            lbl = tk.Label(self.zone_frame, text=f"Zone {z_id}: Waiting...", width=18, height=2, bg="gray", fg="white", font=("Arial", 14, "bold"))
-            lbl.grid(row=0, column=i, padx=5, pady=5)
-            self.zone_labels[z_id] = lbl
+    def scan_spam_solve(self):
+        """Continuous Scan for Max 180s"""
+        logging.info(">>> SPAM SCANNING (Max 180s) <<<")
+        start_time = time.time()
+        found_arrows = [None] * ZONE_COUNT
+        
+        while time.time() - start_time < 180:
+            for i in range(ZONE_COUNT):
+                if found_arrows[i]: continue
 
-    def start_bot(self):
-        if not self.running:
-            self.running = True
-            self.btn_start.config(state=tk.DISABLED)
-            self.btn_stop.config(state=tk.NORMAL)
-            self.thread = threading.Thread(target=self.state_machine, daemon=True)
-            self.thread.start()
-            self.log_to_gui("Bắt đầu tự động hóa câu cá...")
+                z_id = i + 1
+                sub_zones = self.config.get('sub_zones', [])
+                zone = next((z for z in sub_zones if z['id'] == z_id), None)
+                if not zone: continue
 
-    def stop_bot(self):
-        self.running = False
-        self.btn_start.config(state=tk.NORMAL)
-        self.btn_stop.config(state=tk.DISABLED)
-        self.log_to_gui("Đã dừng bot.")
+                monitor = {
+                    "top": zone['y'], "left": zone['x'], 
+                    "width": zone['w'], "height": zone['h']
+                }
 
-    def check_color(self, x, y):
-        with mss.mss() as sct:
-            monitor = {"top": y, "left": x, "width": 1, "height": 1}
-            img = np.array(sct.grab(monitor))
-            b, g, r, _ = img[0, 0]
-            return (r, g, b)
+                try:
+                    with mss.mss() as sct:
+                        # Capture -> Gray
+                        img = np.array(sct.grab(monitor))
+                        gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
 
-    def state_machine(self):
-        # Find game window
-        self.log_to_gui(f"Đang tìm cửa sổ game với tiêu đề: '{self.window_title}'...")
-        windows = gw.getWindowsWithTitle(self.window_title)
-        if not windows:
-            self.log_to_gui(f"LỖI: Không tìm thấy cửa sổ '{self.window_title}'")
-            self.stop_bot()
-            return
-        win = windows[0]
-        self.log_to_gui(f"Đã tìm thấy cửa sổ: {win.title} tại ({win.left}, {win.top})")
-        while self.running:
-            # STATE 1: CASTING
-            self.log_to_gui("Casting rod...")
-            pydirectinput.press(self.cast_key)
-            time.sleep(2)
-            if not self.running: break
+                        # 1. Resize 50%
+                        h, w = gray.shape
+                        nh, nw = int(h * TURBO_SCALE), int(w * TURBO_SCALE)
+                        gray_small = cv2.resize(gray, (nw, nh), interpolation=cv2.INTER_LINEAR)
 
-            # STATE 2: WAITING
-            self.log_to_gui("Đang chờ cá cắn...")
-            found_fish = False
-            while self.running:
-                x = self.trigger_pixel['x']
-                y = self.trigger_pixel['y']
-                r, g, b = self.check_color(x, y)
-                if r > 200:
-                    found_fish = True
-                    break
-                time.sleep(0.25)
-            if not self.running: break
-            if not found_fish:
-                self.log_to_gui("Không phát hiện cá, thử lại...")
-                continue
+                        # 2. Binary 175
+                        _, binary = cv2.threshold(gray_small, BINARY_THRESHOLD_VAL, 255, cv2.THRESH_BINARY)
 
-            # STATE 3: PREPARE
-            #self.log_to_gui("Fish bitten! Preparing to catch...")
-            #time.sleep(30)
-            #if not self.running: break
-
-            # STATE 4: SCAN & CATCH
-            self.log_to_gui("Đang quét mũi tên...")
-            start_time = time.time()
-            arrows = [None]*5
-            while self.running and time.time() - start_time < 30:
-                win_left = win.left
-                win_top = win.top
-                for i in range(5):
-                    z_id = i+1
-                    zone = next((z for z in self.zones if z.get('id') == z_id), None)
-                    if not zone:
-                        arrows[i] = None
-                        continue
-                    monitor = {
-                        "top": win_top + zone['y'],
-                        "left": win_left + zone['x'],
-                        "width": zone['w'],
-                        "height": zone['h']
-                    }
-                    try:
-                        with mss.mss() as sct:
-                            sct_img = sct.grab(monitor)
-                        img_np = np.array(sct_img)
-                        gray_frame = cv2.cvtColor(img_np, cv2.COLOR_BGRA2GRAY)
-                        scores = {}
-                        for d, template in self.arrow_templates.items():
-                            res = cv2.matchTemplate(gray_frame, template, cv2.TM_CCOEFF_NORMED)
+                        # Match
+                        best_score = 0
+                        best_name = None
+                        
+                        for name, tmpl in self.templates.items():
+                            # Using CCORR per latest fix
+                            res = cv2.matchTemplate(binary, tmpl, cv2.TM_CCORR_NORMED)
                             _, max_val, _, _ = cv2.minMaxLoc(res)
-                            scores[d] = max_val
-                        winner = max(scores, key=scores.get)
-                        max_score = scores[winner]
-                        if max_score > THRESHOLD:
-                            arrows[i] = winner.upper()
-                        else:
-                            arrows[i] = None
-                    except Exception as e:
-                        self.log_to_gui(f"Lỗi quét zone {z_id}: {e}")
-                        arrows[i] = None
-                if all(a is not None for a in arrows):
-                    break
-                time.sleep(0.05)
-            if not self.running: break
-            if not all(a is not None for a in arrows):
-                self.log_to_gui("Không nhận diện đủ mũi tên, bỏ qua lượt này!")
-                time.sleep(1)
-                continue
-            self.log_to_gui(f"Nhận diện: {'-'.join(arrows)}. Đang bấm phím...")
-            for arrow in arrows:
-                pydirectinput.press(arrow.lower())
-                time.sleep(0.1)
+                            if max_val > best_score:
+                                best_score = max_val
+                                best_name = name
+                        
+                        if best_score > MATCH_THRESHOLD:
+                            found_arrows[i] = best_name
+                except Exception as e:
+                    print(e)
+            
+            if all(found_arrows):
+                return found_arrows
+            
+            time.sleep(0.01)
+        
+        return None # Timeout
 
-            # STATE 5: COOLDOWN
-            self.log_to_gui("Resting...")
-            for _ in range(60):
-                if not self.running:
-                    break
-                time.sleep(0.1)
-        self.log_to_gui("Bot đã dừng hoàn toàn.")
+    def run(self):
+        print("Simple Fisher Running (Spam Mode)... Press 'q' to quit.")
+        cast_key = str(self.config.get('cast_key', '1'))
+        
+        while not keyboard.is_pressed('q'):
+            # 1. Cast
+            logging.info("[1] Casting...")
+            pydirectinput.press(cast_key)
+            time.sleep(2.0)
+
+            # 2. Spam Scan (Replaces Sentinel)
+            logging.info("[2] Scanning...")
+            results = self.scan_spam_solve()
+            
+            if results and all(results):
+                logging.info(f"SUCCESS: {results}")
+                for raw_key in results:
+                    key = re.sub(r'\d+', '', raw_key).lower()
+                    logging.info(f"Pressing: {key}")
+                    pydirectinput.keyDown(key)
+                    time.sleep(0.15)
+                    pydirectinput.keyUp(key)
+                    time.sleep(0.1)
+            else:
+                logging.info("TIMEOUT: Arrows missed.")
+
+            # 3. Cooldown
+            logging.info("[3] Cooldown 5s...")
+            time.sleep(5)
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = FishingBotApp(root)
-    root.mainloop()
+    if not os.path.exists(CONFIG_FILE):
+        print("Please run modern_bot.py first to generate config or ensure files exist.")
+    else:
+        bot = SimpleFisher()
+        bot.run()
